@@ -14,6 +14,8 @@ type Brief = {
   objections: string;
   cta: string;
   budget: string;
+  productUrl: string;
+  referenceImageUrl: string;
 };
 
 type AdVariant = {
@@ -30,6 +32,12 @@ type AdVariant = {
 type ImageResult = {
   data: string;
   mimeType: string;
+};
+
+type ReferenceImage = {
+  data: string;
+  mimeType: string;
+  name: string;
 };
 
 const toneOptions = [
@@ -79,6 +87,8 @@ const defaultBrief: Brief = {
   objections: "",
   cta: "Get started",
   budget: "$50/day",
+  productUrl: "",
+  referenceImageUrl: "",
 };
 
 const creditsPerAd = 1;
@@ -155,7 +165,13 @@ function buildImagePrompt(ad: AdVariant, brief: Brief) {
   const tone = brief.tone ? `Tone: ${brief.tone}.` : "";
   const audience = brief.audience ? `Audience: ${brief.audience}.` : "";
 
-  return `Create a high-converting Meta feed ad creative. Brand: ${brand}. Product: ${product}. ${offer} ${tone} ${audience} Use a bold headline and leave safe margins for text. Visual concept: ${ad.creative}. Headline concept: ${ad.headline}.`; 
+  return `Create a high-converting Meta feed ad creative. Brand: ${brand}. Product: ${product}. ${offer} ${tone} ${audience} Use a bold headline and leave safe margins for text. Visual concept: ${ad.creative}. Headline concept: ${ad.headline}.`;
+}
+
+function parseDataUrl(dataUrl: string) {
+  const match = /^data:(.*);base64,(.*)$/.exec(dataUrl);
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2] };
 }
 
 export default function Home() {
@@ -166,6 +182,9 @@ export default function Home() {
   const [images, setImages] = useState<Record<string, ImageResult>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(
+    null
+  );
 
   const canGenerate = credits >= adsPerSprint * creditsPerAd;
 
@@ -199,6 +218,11 @@ export default function Home() {
         body: JSON.stringify({
           prompt: buildImagePrompt(ad, brief),
           aspectRatio: "4:5",
+          productUrl: brief.productUrl || undefined,
+          referenceImage: referenceImage
+            ? { data: referenceImage.data, mimeType: referenceImage.mimeType }
+            : undefined,
+          referenceImageUrl: brief.referenceImageUrl || undefined,
         }),
       });
 
@@ -216,6 +240,23 @@ export default function Home() {
     } finally {
       setLoadingId(null);
     }
+  };
+
+  const onUploadReference = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = parseDataUrl(String(reader.result));
+      if (!parsed) return;
+      setReferenceImage({
+        data: parsed.data,
+        mimeType: parsed.mimeType,
+        name: file.name,
+      });
+    };
+    reader.readAsDataURL(file);
   };
 
   return (
@@ -295,6 +336,20 @@ export default function Home() {
                   className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
                   placeholder="AI ad sprint platform"
                 />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm text-[var(--muted)]">Product URL (optional)</label>
+                <input
+                  value={brief.productUrl}
+                  onChange={(event) =>
+                    setBrief((prev) => ({ ...prev, productUrl: event.target.value }))
+                  }
+                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  placeholder="https://your-product.com"
+                />
+                <p className="text-xs text-[var(--muted)]">
+                  We will read this page to pull product context.
+                </p>
               </div>
               <div className="grid gap-2">
                 <label className="text-sm text-[var(--muted)]">Offer</label>
@@ -407,6 +462,52 @@ export default function Home() {
                     className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
                     placeholder="$100/day"
                   />
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--panel-2)] p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                  Reference assets (optional)
+                </p>
+                <div className="mt-3 grid gap-3">
+                  <div className="grid gap-2">
+                    <label className="text-sm text-[var(--muted)]">Reference image URL</label>
+                    <input
+                      value={brief.referenceImageUrl}
+                      onChange={(event) =>
+                        setBrief((prev) => ({
+                          ...prev,
+                          referenceImageUrl: event.target.value,
+                        }))
+                      }
+                      className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                      placeholder="https://cdn.site/product.png"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-sm text-[var(--muted)]">Upload reference image</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={onUploadReference}
+                      className="text-sm text-[var(--muted)]"
+                    />
+                    {referenceImage ? (
+                      <div className="flex items-center justify-between rounded-2xl border border-[var(--stroke)] bg-[var(--panel)] px-4 py-2 text-xs text-[var(--muted)]">
+                        <span>{referenceImage.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setReferenceImage(null)}
+                          className="rounded-full border border-[var(--stroke)] px-3 py-1 text-xs"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : null}
+                    <p className="text-xs text-[var(--muted)]">
+                      Uploaded image takes priority over URL.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
