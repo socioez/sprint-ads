@@ -1,4 +1,5 @@
 ﻿import { GoogleGenAI } from "@google/genai";
+import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -68,9 +69,36 @@ export async function POST(request: Request) {
       );
     }
 
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = (await request.json()) as GenerateCopyRequest;
     if (!body?.brief) {
       return Response.json({ error: "Brief is required." }, { status: 400 });
+    }
+
+    const creditsNeeded = Math.max(body.count ?? 0, 1);
+    const { data: creditRow, error: creditError } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("user_id", user.id)
+      .single();
+
+    if (creditError || !creditRow) {
+      return Response.json(
+        { error: "Credits not initialized." },
+        { status: 500 }
+      );
+    }
+
+    if (creditRow.balance < creditsNeeded) {
+      return Response.json({ error: "Not enough credits." }, { status: 402 });
     }
 
     const ai = new GoogleGenAI({ apiKey });
@@ -95,7 +123,24 @@ export async function POST(request: Request) {
     const jsonText = extractJson(text) || text;
     const parsed = JSON.parse(jsonText);
 
-    return Response.json({ ads: parsed });
+    const { data: updatedCredits } = await supabase
+      .from("credits")
+      .update({ balance: creditRow.balance - creditsNeeded })
+      .eq("user_id", user.id)
+      .select("balance")
+      .single();
+
+    await supabase.from("usage_events").insert({
+      user_id: user.id,
+      type: "copy",
+      credits_used: creditsNeeded,
+      meta: { count: body.count },
+    });
+
+    return Response.json({
+      ads: parsed,
+      creditsRemaining: updatedCredits?.balance ?? creditRow.balance,
+    });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Copy generation failed.";

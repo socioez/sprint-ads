@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";`nimport { createClient } from "@/lib/supabase/client";`nimport type { User } from "@supabase/supabase-js";
 
 type Brief = {
   brand: string;
@@ -135,7 +135,9 @@ function parseDataUrl(dataUrl: string) {
 export default function Home() {
   const [brief, setBrief] = useState<Brief>(defaultBrief);
   const [ads, setAds] = useState<AdVariant[]>([]);
-  const [credits, setCredits] = useState(120);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [credits, setCredits] = useState(0);
   const [status, setStatus] = useState("Ready for sprint");
   const [images, setImages] = useState<Record<string, ImageResult>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
@@ -146,6 +148,7 @@ export default function Home() {
     null
   );
 
+  const supabase = useMemo(() => createClient(), []);
   const canGenerate = credits >= adsPerSprint * creditsPerAd;
 
   const summary = useMemo(() => {
@@ -156,7 +159,56 @@ export default function Home() {
     };
   }, [ads, credits]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    const init = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setAuthReady(true);
+      }
+    };
+
+    init();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthReady(true);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  useEffect(() => {
+    const loadCredits = async () => {
+      if (!user) return;
+      const { data, error } = await supabase
+        .from("credits")
+        .select("balance")
+        .eq("user_id", user.id)
+        .single();
+
+      if (!error && data) {
+        setCredits(data.balance);
+      }
+    };
+
+    loadCredits();
+  }, [supabase, user]);
+
   const onGenerate = async () => {
+    if (!user) {
+      setCopyError("Please sign in to generate ads.");
+      return;
+    }
     if (!canGenerate) {
       setStatus("Not enough credits. Top up to run a sprint.");
       return;
@@ -177,7 +229,10 @@ export default function Home() {
         throw new Error(data?.error ?? "Copy generation failed.");
       }
 
-      const data = (await response.json()) as { ads: AdVariant[] };
+      const data = (await response.json()) as {
+        ads: AdVariant[];
+        creditsRemaining?: number;
+      };
       const normalized = data.ads.map((ad, index) => ({
         id: ad.id || `ad-${index + 1}`,
         angle: ad.angle || "Angle",
@@ -190,7 +245,11 @@ export default function Home() {
       }));
 
       setAds(normalized);
-      setCredits((prev) => prev - adsPerSprint * creditsPerAd);
+      if (typeof data.creditsRemaining === "number") {
+        setCredits(data.creditsRemaining);
+      } else {
+        setCredits((prev) => prev - adsPerSprint * creditsPerAd);
+      }
       setStatus("Sprint complete. Review and export.");
     } catch (error) {
       setCopyError(
@@ -208,6 +267,10 @@ export default function Home() {
   };
 
   const onGenerateImage = async (ad: AdVariant) => {
+    if (!user) {
+      setImageError("Please sign in to generate images.");
+      return;
+    }
     setLoadingId(ad.id);
     setImageError(null);
 
@@ -231,8 +294,15 @@ export default function Home() {
         throw new Error(data?.error ?? "Image generation failed.");
       }
 
-      const data = (await response.json()) as ImageResult;
+      const data = (await response.json()) as ImageResult & {
+        creditsRemaining?: number;
+      };
       setImages((prev) => ({ ...prev, [ad.id]: data }));
+      if (typeof data.creditsRemaining === "number") {
+        setCredits(data.creditsRemaining);
+      } else {
+        setCredits((prev) => Math.max(prev - 1, 0));
+      }
     } catch (error) {
       setImageError(
         error instanceof Error ? error.message : "Image generation failed."
@@ -266,6 +336,57 @@ export default function Home() {
     });
   };
 
+  const onSignIn = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+  };
+
+  const onSignOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen px-6 py-10">
+        <main className="mx-auto flex max-w-3xl flex-col gap-6">
+          <div className="rounded-3xl border border-[var(--stroke)] bg-[var(--panel)] p-8">
+            <p className="text-sm text-[var(--muted)]">Loading session...</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen px-6 py-10">
+        <main className="mx-auto flex max-w-3xl flex-col gap-6">
+          <div className="rounded-3xl border border-[var(--stroke)] bg-[var(--panel)] p-8">
+            <p className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+              Sprint Ads
+            </p>
+            <h1 className="mt-3 text-3xl font-semibold">
+              Sign in to your dashboard
+            </h1>
+            <p className="mt-3 text-sm text-[var(--muted)]">
+              Use Google to access your ad sprints, credits, and exports.
+            </p>
+            <button
+              onClick={onSignIn}
+              className="mt-6 rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-black transition hover:brightness-110"
+            >
+              Continue with Google
+            </button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen px-6 py-10">
       <main className="mx-auto flex max-w-6xl flex-col gap-10">
@@ -290,6 +411,12 @@ export default function Home() {
               </div>
               <button className="rounded-full bg-[var(--accent)] px-5 py-2 text-sm font-semibold text-black transition hover:brightness-110">
                 New sprint
+              </button>
+              <button
+                onClick={onSignOut}
+                className="rounded-full border border-[var(--stroke)] px-5 py-2 text-sm text-[var(--muted)] transition hover:text-white"
+              >
+                Sign out
               </button>
             </div>
           </div>
@@ -802,3 +929,5 @@ export default function Home() {
     </div>
   );
 }
+
+

@@ -1,4 +1,5 @@
 ﻿import { GoogleGenAI } from "@google/genai";
+import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 
@@ -87,6 +88,32 @@ export async function POST(request: Request) {
       );
     }
 
+    const supabase = createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { data: creditRow, error: creditError } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("user_id", user.id)
+      .single();
+
+    if (creditError || !creditRow) {
+      return Response.json(
+        { error: "Credits not initialized." },
+        { status: 500 }
+      );
+    }
+
+    if (creditRow.balance < 1) {
+      return Response.json({ error: "Not enough credits." }, { status: 402 });
+    }
+
     const body = (await request.json()) as GenerateRequest;
     if (!body?.prompt) {
       return Response.json(
@@ -154,9 +181,24 @@ export async function POST(request: Request) {
       );
     }
 
+    const { data: updatedCredits } = await supabase
+      .from("credits")
+      .update({ balance: creditRow.balance - 1 })
+      .eq("user_id", user.id)
+      .select("balance")
+      .single();
+
+    await supabase.from("usage_events").insert({
+      user_id: user.id,
+      type: "image",
+      credits_used: 1,
+      meta: { aspectRatio: body.aspectRatio ?? "1:1" },
+    });
+
     return Response.json({
       data: imagePart.inlineData.data,
       mimeType: imagePart.inlineData.mimeType ?? "image/png",
+      creditsRemaining: updatedCredits?.balance ?? creditRow.balance,
     });
   } catch (error) {
     const message =
