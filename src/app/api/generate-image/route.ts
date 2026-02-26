@@ -21,6 +21,8 @@ type ProductContext = {
   ogImage: string;
 };
 
+const IMAGE_CREDITS = 5;
+
 function stripHtml(input: string) {
   return input
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -110,7 +112,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (creditRow.balance < 1) {
+    if (creditRow.balance < IMAGE_CREDITS) {
       return Response.json({ error: "Not enough credits." }, { status: 402 });
     }
 
@@ -183,7 +185,7 @@ export async function POST(request: Request) {
 
     const { data: updatedCredits } = await supabase
       .from("credits")
-      .update({ balance: creditRow.balance - 1 })
+      .update({ balance: creditRow.balance - IMAGE_CREDITS })
       .eq("user_id", user.id)
       .select("balance")
       .single();
@@ -191,7 +193,7 @@ export async function POST(request: Request) {
     await supabase.from("usage_events").insert({
       user_id: user.id,
       type: "image",
-      credits_used: 1,
+      credits_used: IMAGE_CREDITS,
       meta: { aspectRatio: body.aspectRatio ?? "1:1" },
     });
 

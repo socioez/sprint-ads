@@ -21,6 +21,8 @@ type GenerateCopyRequest = {
   count: number;
 };
 
+const SPRINT_CREDITS = 10;
+
 function stripHtml(input: string) {
   return input
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -83,7 +85,6 @@ export async function POST(request: Request) {
       return Response.json({ error: "Brief is required." }, { status: 400 });
     }
 
-    const creditsNeeded = Math.max(body.count ?? 0, 1);
     const { data: creditRow, error: creditError } = await supabase
       .from("credits")
       .select("balance")
@@ -97,12 +98,12 @@ export async function POST(request: Request) {
       );
     }
 
-    if (creditRow.balance < creditsNeeded) {
+    if (creditRow.balance < SPRINT_CREDITS) {
       return Response.json({ error: "Not enough credits." }, { status: 402 });
     }
 
     const ai = new GoogleGenAI({ apiKey });
-    const model = process.env.GEMINI_TEXT_MODEL ?? "gemini-2.0-flash";
+    const model = process.env.GEMINI_TEXT_MODEL ?? "gemini-2.5-flash";
 
     const productText = body.brief.productUrl
       ? await fetchProductText(body.brief.productUrl)
@@ -125,7 +126,7 @@ export async function POST(request: Request) {
 
     const { data: updatedCredits } = await supabase
       .from("credits")
-      .update({ balance: creditRow.balance - creditsNeeded })
+      .update({ balance: creditRow.balance - SPRINT_CREDITS })
       .eq("user_id", user.id)
       .select("balance")
       .single();
@@ -133,7 +134,7 @@ export async function POST(request: Request) {
     await supabase.from("usage_events").insert({
       user_id: user.id,
       type: "copy",
-      credits_used: creditsNeeded,
+      credits_used: SPRINT_CREDITS,
       meta: { count: body.count },
     });
 

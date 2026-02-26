@@ -98,7 +98,8 @@ const defaultBrief: Brief = {
   referenceImageUrl: "",
 };
 
-const creditsPerAd = 1;
+const creditsPerSprint = 10;
+const creditsPerImage = 5;
 const adsPerSprint = 6;
 
 function toCsv(ads: AdVariant[]) {
@@ -191,13 +192,13 @@ export default function Home() {
   );
 
   const supabase = useMemo(() => createClient(), []);
-  const canGenerate = credits >= adsPerSprint * creditsPerAd;
+  const canGenerate = credits >= creditsPerSprint;
 
   const summary = useMemo(() => {
     return {
       generated: ads.length,
       remaining: Math.max(credits, 0),
-      spend: ads.length * creditsPerAd,
+      spend: creditsPerSprint,
     };
   }, [ads, credits]);
 
@@ -333,7 +334,7 @@ export default function Home() {
       if (typeof data.creditsRemaining === "number") {
         setCredits(data.creditsRemaining);
       } else {
-        setCredits((prev) => prev - adsPerSprint * creditsPerAd);
+        setCredits((prev) => prev - creditsPerSprint);
       }
       setStatus("Sprint complete. Review and export.");
     } catch (error) {
@@ -392,7 +393,7 @@ export default function Home() {
       if (typeof data.creditsRemaining === "number") {
         setCredits(data.creditsRemaining);
       } else {
-        setCredits((prev) => Math.max(prev - 1, 0));
+        setCredits((prev) => Math.max(prev - creditsPerImage, 0));
       }
     } catch (error) {
       setImageError(
@@ -606,7 +607,7 @@ export default function Home() {
             </div>
             <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--panel)] p-4">
               <p className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Credit burn</p>
-              <p className="mt-2 text-lg font-medium">{adsPerSprint * creditsPerAd} credits</p>
+              <p className="mt-2 text-lg font-medium">{creditsPerSprint} credits</p>
             </div>
           </div>
         </header>
@@ -964,7 +965,7 @@ export default function Home() {
               </button>
               <p className="text-xs text-[var(--muted)]">
                 {canGenerate
-                  ? "6 ads x 1 credit each"
+                  ? `${adsPerSprint} ads = ${creditsPerSprint} credits`
                   : "Top up credits to run the next sprint."}
               </p>
             </div>

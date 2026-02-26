@@ -44,7 +44,7 @@ begin
   on conflict (id) do nothing;
 
   insert into public.credits (user_id, balance)
-  values (new.id, 120)
+  values (new.id, 30)
   on conflict (user_id) do nothing;
 
   return new;
