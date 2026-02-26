@@ -57,24 +57,6 @@ const objectiveOptions = [
   "Awareness",
 ];
 
-const angleOptions = [
-  "Pain Relief",
-  "Outcome Driven",
-  "Social Proof",
-  "Scarcity",
-  "Curiosity",
-  "Speed",
-];
-
-const creativeFrames = [
-  "Bold headline + product close-up",
-  "Split-screen before/after",
-  "UGC selfie testimonial frame",
-  "Checklist overlay with 3 benefits",
-  "Minimal product + offer badge",
-  "Carousel: problem → solution → proof",
-];
-
 const defaultBrief: Brief = {
   brand: "",
   product: "",
@@ -85,47 +67,14 @@ const defaultBrief: Brief = {
   landingPage: "",
   keyBenefits: "",
   objections: "",
-  cta: "Get started",
-  budget: "$50/day",
+  cta: "",
+  budget: "",
   productUrl: "",
   referenceImageUrl: "",
 };
 
 const creditsPerAd = 1;
 const adsPerSprint = 6;
-
-function pick(list: string[], seed: number) {
-  return list[seed % list.length];
-}
-
-function generateAds(brief: Brief, count: number) {
-  const base = `${brief.product || "your product"}`;
-  const offer = brief.offer ? ` ${brief.offer}` : "";
-  const audience = brief.audience ? ` for ${brief.audience}` : "";
-  const benefit = brief.keyBenefits || "faster workflows, cleaner output";
-  const objection = brief.objections || "time, complexity, cost";
-
-  return Array.from({ length: count }).map((_, index) => {
-    const angle = pick(angleOptions, index + 2);
-    const tone = pick(toneOptions, index + 3);
-    const creative = pick(creativeFrames, index + 5);
-    const hook = `${angle}: ${base} that fixes ${objection}.`;
-    const primary = `${base}${audience} that delivers ${benefit}.${offer} ${tone} CTA: ${brief.cta}.`;
-    const headline = `${base} ${brief.objective.toLowerCase()} engine${offer}`;
-    const description = `Built for ${brief.objective.toLowerCase()} teams. Ship in 24 hours.`;
-
-    return {
-      id: `ad-${index + 1}`,
-      angle,
-      hook,
-      primary,
-      headline,
-      description,
-      cta: brief.cta || "Get started",
-      creative,
-    };
-  });
-}
 
 function toCsv(ads: AdVariant[]) {
   const headers = [
@@ -158,6 +107,15 @@ function downloadCsv(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+function downloadImage(filename: string, image: ImageResult) {
+  const link = document.createElement("a");
+  link.href = `data:${image.mimeType};base64,${image.data}`;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 function buildImagePrompt(ad: AdVariant, brief: Brief) {
   const brand = brief.brand || "the brand";
   const product = brief.product || "the product";
@@ -182,6 +140,8 @@ export default function Home() {
   const [images, setImages] = useState<Record<string, ImageResult>>({});
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [generatingAds, setGeneratingAds] = useState(false);
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(
     null
   );
@@ -196,15 +156,55 @@ export default function Home() {
     };
   }, [ads, credits]);
 
-  const onGenerate = () => {
+  const onGenerate = async () => {
     if (!canGenerate) {
       setStatus("Not enough credits. Top up to run a sprint.");
       return;
     }
-    const next = generateAds(brief, adsPerSprint);
-    setAds(next);
-    setCredits((prev) => prev - adsPerSprint * creditsPerAd);
-    setStatus("Sprint complete. Review and export.");
+
+    setGeneratingAds(true);
+    setCopyError(null);
+
+    try {
+      const response = await fetch("/api/generate-copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brief, count: adsPerSprint }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { error?: string };
+        throw new Error(data?.error ?? "Copy generation failed.");
+      }
+
+      const data = (await response.json()) as { ads: AdVariant[] };
+      const normalized = data.ads.map((ad, index) => ({
+        id: ad.id || `ad-${index + 1}`,
+        angle: ad.angle || "Angle",
+        hook: ad.hook || "",
+        primary: ad.primary || "",
+        headline: ad.headline || "",
+        description: ad.description || "",
+        cta: ad.cta || brief.cta || "Get started",
+        creative: ad.creative || "",
+      }));
+
+      setAds(normalized);
+      setCredits((prev) => prev - adsPerSprint * creditsPerAd);
+      setStatus("Sprint complete. Review and export.");
+    } catch (error) {
+      setCopyError(
+        error instanceof Error ? error.message : "Copy generation failed."
+      );
+    } finally {
+      setGeneratingAds(false);
+    }
+  };
+
+  const updateAd = (id: string, field: keyof AdVariant, value: string) => {
+    setAds((prev) =>
+      prev.map((ad) => (ad.id === id ? { ...ad, [field]: value } : ad))
+    );
   };
 
   const onGenerateImage = async (ad: AdVariant) => {
@@ -257,6 +257,13 @@ export default function Home() {
       });
     };
     reader.readAsDataURL(file);
+  };
+
+  const downloadAllImages = () => {
+    const entries = Object.entries(images);
+    entries.forEach(([id, image]) => {
+      downloadImage(`sprint-ads-${id}.png`, image);
+    });
   };
 
   return (
@@ -520,8 +527,9 @@ export default function Home() {
                     ? "bg-[var(--accent)] hover:brightness-110"
                     : "bg-[var(--muted)]"
                 }`}
+                disabled={generatingAds}
               >
-                Generate sprint ads
+                {generatingAds ? "Generating..." : "Generate sprint ads"}
               </button>
               <p className="text-xs text-[var(--muted)]">
                 {canGenerate
@@ -529,26 +537,44 @@ export default function Home() {
                   : "Top up credits to run the next sprint."}
               </p>
             </div>
+            {copyError ? (
+              <div className="rounded-2xl border border-[var(--danger)]/40 bg-[var(--panel-2)] p-4 text-sm text-[var(--danger)]">
+                {copyError}
+              </div>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-6">
             <div className="rounded-3xl border border-[var(--stroke)] bg-[var(--panel)] p-6">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">Output</p>
                   <h2 className="mt-2 text-2xl font-semibold">Meta ad pack</h2>
                 </div>
-                <button
-                  onClick={() => downloadCsv("sprint-ads.csv", toCsv(ads))}
-                  disabled={!ads.length}
-                  className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
-                    ads.length
-                      ? "bg-[var(--accent-2)] text-black hover:brightness-110"
-                      : "bg-[var(--panel-2)] text-[var(--muted)]"
-                  }`}
-                >
-                  Export CSV
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => downloadCsv("sprint-ads.csv", toCsv(ads))}
+                    disabled={!ads.length}
+                    className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+                      ads.length
+                        ? "bg-[var(--accent-2)] text-black hover:brightness-110"
+                        : "bg-[var(--panel-2)] text-[var(--muted)]"
+                    }`}
+                  >
+                    Export CSV
+                  </button>
+                  <button
+                    onClick={downloadAllImages}
+                    disabled={!Object.keys(images).length}
+                    className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+                      Object.keys(images).length
+                        ? "bg-[var(--accent)] text-black hover:brightness-110"
+                        : "bg-[var(--panel-2)] text-[var(--muted)]"
+                    }`}
+                  >
+                    Download all images
+                  </button>
+                </div>
               </div>
 
               {imageError ? (
@@ -580,35 +606,116 @@ export default function Home() {
                             {ad.id}
                           </span>
                         </div>
-                        <h3 className="mt-3 text-lg font-semibold">{ad.headline}</h3>
-                        <p className="mt-3 text-sm text-[var(--muted)]">{ad.primary}</p>
-                        <div className="mt-4 grid gap-2 text-sm">
+                        <div className="mt-3 grid gap-3">
                           <div>
-                            <span className="text-[var(--muted)]">Hook:</span> {ad.hook}
+                            <label className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                              Headline
+                            </label>
+                            <textarea
+                              value={ad.headline}
+                              onChange={(event) =>
+                                updateAd(ad.id, "headline", event.target.value)
+                              }
+                              className="mt-2 min-h-[50px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                            />
                           </div>
                           <div>
-                            <span className="text-[var(--muted)]">Description:</span> {ad.description}
+                            <label className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                              Primary text
+                            </label>
+                            <textarea
+                              value={ad.primary}
+                              onChange={(event) =>
+                                updateAd(ad.id, "primary", event.target.value)
+                              }
+                              className="mt-2 min-h-[80px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                            />
                           </div>
-                          <div>
-                            <span className="text-[var(--muted)]">CTA:</span> {ad.cta}
-                          </div>
-                          <div>
-                            <span className="text-[var(--muted)]">Creative:</span> {ad.creative}
+                          <div className="grid gap-2 text-sm">
+                            <div>
+                              <span className="text-[var(--muted)]">Hook:</span>
+                              <textarea
+                                value={ad.hook}
+                                onChange={(event) =>
+                                  updateAd(ad.id, "hook", event.target.value)
+                                }
+                                className="mt-2 min-h-[40px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                              />
+                            </div>
+                            <div>
+                              <span className="text-[var(--muted)]">Description:</span>
+                              <textarea
+                                value={ad.description}
+                                onChange={(event) =>
+                                  updateAd(
+                                    ad.id,
+                                    "description",
+                                    event.target.value
+                                  )
+                                }
+                                className="mt-2 min-h-[40px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                              />
+                            </div>
+                            <div className="grid gap-2 sm:grid-cols-2">
+                              <div>
+                                <span className="text-[var(--muted)]">CTA:</span>
+                                <input
+                                  value={ad.cta}
+                                  onChange={(event) =>
+                                    updateAd(ad.id, "cta", event.target.value)
+                                  }
+                                  className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                                />
+                              </div>
+                              <div>
+                                <span className="text-[var(--muted)]">Creative:</span>
+                                <input
+                                  value={ad.creative}
+                                  onChange={(event) =>
+                                    updateAd(
+                                      ad.id,
+                                      "creative",
+                                      event.target.value
+                                    )
+                                  }
+                                  className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                                />
+                              </div>
+                            </div>
                           </div>
                         </div>
 
                         <div className="mt-5 grid gap-3">
-                          <button
-                            onClick={() => onGenerateImage(ad)}
-                            className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
-                              isLoading
-                                ? "bg-[var(--panel)] text-[var(--muted)]"
-                                : "bg-[var(--accent)] text-black hover:brightness-110"
-                            }`}
-                            disabled={isLoading}
-                          >
-                            {isLoading ? "Generating creative..." : "Generate creative"}
-                          </button>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => onGenerateImage(ad)}
+                              className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+                                isLoading
+                                  ? "bg-[var(--panel)] text-[var(--muted)]"
+                                  : "bg-[var(--accent)] text-black hover:brightness-110"
+                              }`}
+                              disabled={isLoading}
+                            >
+                              {isLoading
+                                ? "Generating creative..."
+                                : "Generate creative"}
+                            </button>
+                            <button
+                              onClick={() =>
+                                image
+                                  ? downloadImage(`sprint-ads-${ad.id}.png`, image)
+                                  : null
+                              }
+                              disabled={!image}
+                              className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+                                image
+                                  ? "bg-[var(--accent-2)] text-black hover:brightness-110"
+                                  : "bg-[var(--panel)] text-[var(--muted)]"
+                              }`}
+                            >
+                              Download image
+                            </button>
+                          </div>
                           {image ? (
                             <div className="overflow-hidden rounded-2xl border border-[var(--stroke)] bg-[var(--panel)]">
                               <img

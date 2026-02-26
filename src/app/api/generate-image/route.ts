@@ -15,6 +15,11 @@ type GenerateRequest = {
   referenceImageUrl?: string;
 };
 
+type ProductContext = {
+  text: string;
+  ogImage: string;
+};
+
 function stripHtml(input: string) {
   return input
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -22,6 +27,15 @@ function stripHtml(input: string) {
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function extractMeta(html: string, key: string) {
+  const pattern = new RegExp(
+    `<meta[^>]+(?:property|name)=["']${key}["'][^>]+content=["']([^"']+)["'][^>]*>`,
+    "i"
+  );
+  const match = html.match(pattern);
+  return match ? match[1] : "";
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number) {
@@ -35,15 +49,19 @@ async function fetchWithTimeout(url: string, timeoutMs: number) {
   }
 }
 
-async function fetchProductText(url: string) {
+async function fetchProductContext(url: string): Promise<ProductContext> {
   try {
     const response = await fetchWithTimeout(url, 8000);
-    if (!response.ok) return "";
+    if (!response.ok) return { text: "", ogImage: "" };
     const html = await response.text();
-    const text = stripHtml(html);
-    return text.slice(0, 2000);
+    const text = stripHtml(html).slice(0, 2000);
+    const ogImage =
+      extractMeta(html, "og:image") ||
+      extractMeta(html, "twitter:image") ||
+      "";
+    return { text, ogImage };
   } catch {
-    return "";
+    return { text: "", ogImage: "" };
   }
 }
 
@@ -81,9 +99,9 @@ export async function POST(request: Request) {
     const model =
       process.env.GEMINI_IMAGE_MODEL ?? "gemini-3-pro-image-preview";
 
-    const productText = body.productUrl
-      ? await fetchProductText(body.productUrl)
-      : "";
+    const productContext = body.productUrl
+      ? await fetchProductContext(body.productUrl)
+      : { text: "", ogImage: "" };
 
     const imageParts: { inlineData: ReferenceImage }[] = [];
 
@@ -94,17 +112,20 @@ export async function POST(request: Request) {
           mimeType: body.referenceImage.mimeType,
         },
       });
-    }
-
-    if (!imageParts.length && body.referenceImageUrl) {
+    } else if (body.referenceImageUrl) {
       const fetched = await fetchImageAsBase64(body.referenceImageUrl);
+      if (fetched) {
+        imageParts.push({ inlineData: fetched });
+      }
+    } else if (productContext.ogImage) {
+      const fetched = await fetchImageAsBase64(productContext.ogImage);
       if (fetched) {
         imageParts.push({ inlineData: fetched });
       }
     }
 
-    const enrichedPrompt = productText
-      ? `${body.prompt}\n\nProduct context (from URL): ${productText}`
+    const enrichedPrompt = productContext.text
+      ? `${body.prompt}\n\nProduct context (from URL): ${productContext.text}`
       : body.prompt;
 
     const response = await ai.models.generateContent({
