@@ -1,6 +1,8 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";`nimport { createClient } from "@/lib/supabase/client";`nimport type { User } from "@supabase/supabase-js";
+import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
+import type { User } from "@supabase/supabase-js";
 
 type Brief = {
   brand: string;
