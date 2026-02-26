@@ -31,6 +31,29 @@ type AdVariant = {
   creative: string;
 };
 
+type SprintRecord = {
+  id: string;
+  title: string | null;
+  brief: Brief;
+  created_at: string;
+};
+
+type GalleryAd = {
+  id: string;
+  sprint_id: string;
+  angle: string | null;
+  hook: string | null;
+  primary_text: string | null;
+  headline: string | null;
+  description: string | null;
+  cta: string | null;
+  creative: string | null;
+  image_url: string | null;
+  created_at: string;
+};
+
+type GalleryItem = SprintRecord & { ads: GalleryAd[] };
+
 type ImageResult = {
   data: string;
   mimeType: string;
@@ -125,13 +148,25 @@ function buildImagePrompt(ad: AdVariant, brief: Brief) {
   const tone = brief.tone ? `Tone: ${brief.tone}.` : "";
   const audience = brief.audience ? `Audience: ${brief.audience}.` : "";
 
-  return `Create a high-converting Meta feed ad creative. Brand: ${brand}. Product: ${product}. ${offer} ${tone} ${audience} Use a bold headline and leave safe margins for text. Visual concept: ${ad.creative}. Headline concept: ${ad.headline}.`;
+  return `Create a high-converting Meta feed ad creative. Use the provided reference image as the exact product and keep it recognizable. Brand: ${brand}. Product: ${product}. ${offer} ${tone} ${audience} Use a bold headline and leave safe margins for text. Visual concept: ${ad.creative}. Headline concept: ${ad.headline}.`;
 }
 
 function parseDataUrl(dataUrl: string) {
   const match = /^data:(.*);base64,(.*)$/.exec(dataUrl);
   if (!match) return null;
   return { mimeType: match[1], data: match[2] };
+}
+
+function dataUrlToBlob(dataUrl: string) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) return null;
+  const byteString = atob(parsed.data);
+  const byteNumbers = new Array(byteString.length);
+  for (let i = 0; i < byteString.length; i += 1) {
+    byteNumbers[i] = byteString.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  return new Blob([byteArray], { type: parsed.mimeType });
 }
 
 export default function Home() {
@@ -146,6 +181,11 @@ export default function Home() {
   const [imageError, setImageError] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const [generatingAds, setGeneratingAds] = useState(false);
+  const [activeView, setActiveView] = useState<"studio" | "gallery">("studio");
+  const [gallery, setGallery] = useState<GalleryItem[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [currentSprintId, setCurrentSprintId] = useState<string | null>(null);
+  const [adIdMap, setAdIdMap] = useState<Record<string, string>>({});
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(
     null
   );
@@ -206,6 +246,48 @@ export default function Home() {
     loadCredits();
   }, [supabase, user]);
 
+  useEffect(() => {
+    const loadGallery = async () => {
+      if (!user || activeView !== "gallery") return;
+      setGalleryLoading(true);
+
+      const { data: sprints } = await supabase
+        .from("sprints")
+        .select("id,title,brief,created_at")
+        .order("created_at", { ascending: false });
+
+      const { data: adsData } = await supabase
+        .from("ad_variants")
+        .select(
+          "id,sprint_id,angle,hook,primary_text,headline,description,cta,creative,image_url,created_at"
+        )
+        .order("created_at", { ascending: false });
+
+      if (sprints) {
+        const grouped = (adsData ?? []).reduce<Record<string, GalleryAd[]>>(
+          (acc, ad) => {
+            acc[ad.sprint_id] = acc[ad.sprint_id] || [];
+            acc[ad.sprint_id].push(ad);
+            return acc;
+          },
+          {}
+        );
+
+        const mapped = sprints.map((sprint) => ({
+          ...sprint,
+          brief: sprint.brief as Brief,
+          ads: grouped[sprint.id] ?? [],
+        }));
+
+        setGallery(mapped);
+      }
+
+      setGalleryLoading(false);
+    };
+
+    loadGallery();
+  }, [activeView, supabase, user]);
+
   const onGenerate = async () => {
     if (!user) {
       setCopyError("Please sign in to generate ads.");
@@ -247,6 +329,7 @@ export default function Home() {
       }));
 
       setAds(normalized);
+      await saveSprint(normalized);
       if (typeof data.creditsRemaining === "number") {
         setCredits(data.creditsRemaining);
       } else {
@@ -300,6 +383,12 @@ export default function Home() {
         creditsRemaining?: number;
       };
       setImages((prev) => ({ ...prev, [ad.id]: data }));
+      if (currentSprintId) {
+        const imageUrl = await uploadImageToStorage(currentSprintId, ad.id, data);
+        if (imageUrl) {
+          await updateGalleryImage(ad.id, imageUrl);
+        }
+      }
       if (typeof data.creditsRemaining === "number") {
         setCredits(data.creditsRemaining);
       } else {
@@ -336,6 +425,90 @@ export default function Home() {
     entries.forEach(([id, image]) => {
       downloadImage(`sprint-ads-${id}.png`, image);
     });
+  };
+
+  const uploadImageToStorage = async (
+    sprintId: string,
+    adId: string,
+    image: ImageResult
+  ) => {
+    const dataUrl = `data:${image.mimeType};base64,${image.data}`;
+    const blob = dataUrlToBlob(dataUrl);
+    if (!blob) return null;
+
+    const ext = image.mimeType.includes("png")
+      ? "png"
+      : image.mimeType.includes("jpeg")
+      ? "jpg"
+      : "png";
+    const path = `${user?.id}/${sprintId}/${adId}.${ext}`;
+
+    const { error } = await supabase.storage
+      .from("creatives")
+      .upload(path, blob, { upsert: true, contentType: image.mimeType });
+
+    if (error) return null;
+
+    const { data } = supabase.storage.from("creatives").getPublicUrl(path);
+    return data.publicUrl;
+  };
+
+  const saveSprint = async (items: AdVariant[]) => {
+    if (!user) return null;
+    const title = brief.brand
+      ? `${brief.brand} sprint`
+      : `Sprint ${new Date().toLocaleDateString()}`;
+
+    const { data: sprint } = await supabase
+      .from("sprints")
+      .insert({
+        user_id: user.id,
+        title,
+        brief,
+      })
+      .select("id,title,brief,created_at")
+      .single();
+
+    if (!sprint) return null;
+
+    const payload = items.map((ad) => ({
+      user_id: user.id,
+      sprint_id: sprint.id,
+      angle: ad.angle,
+      hook: ad.hook,
+      primary_text: ad.primary,
+      headline: ad.headline,
+      description: ad.description,
+      cta: ad.cta,
+      creative: ad.creative,
+    }));
+
+    const { data: insertedAds } = await supabase
+      .from("ad_variants")
+      .insert(payload)
+      .select("id");
+    setCurrentSprintId(sprint.id);
+    if (insertedAds && insertedAds.length === items.length) {
+      const mapping: Record<string, string> = {};
+      items.forEach((item, index) => {
+        mapping[item.id] = insertedAds[index].id;
+      });
+      setAdIdMap(mapping);
+    }
+
+    return sprint.id;
+  };
+
+  const updateGalleryImage = async (adId: string, imageUrl: string) => {
+    if (!currentSprintId || !user) return;
+    const dbId = adIdMap[adId];
+    if (!dbId) return;
+    await supabase
+      .from("ad_variants")
+      .update({ image_url: imageUrl })
+      .eq("sprint_id", currentSprintId)
+      .eq("user_id", user.id)
+      .eq("id", dbId);
   };
 
   const onSignIn = async () => {
@@ -409,14 +582,14 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-3">
               <div className="rounded-full border border-[var(--stroke)] bg-[var(--panel)] px-4 py-2 text-sm text-[var(--muted)]">
-                Credits: <span className="text-white">{credits}</span>
+                Credits: <span className="text-[var(--ink)]">{credits}</span>
               </div>
               <button className="rounded-full bg-[var(--accent)] px-5 py-2 text-sm font-semibold text-black transition hover:brightness-110">
                 New sprint
               </button>
               <button
                 onClick={onSignOut}
-                className="rounded-full border border-[var(--stroke)] px-5 py-2 text-sm text-[var(--muted)] transition hover:text-white"
+                className="rounded-full border border-[var(--stroke)] px-5 py-2 text-sm text-[var(--muted)] transition hover:text-[var(--ink)]"
               >
                 Sign out
               </button>
@@ -438,6 +611,134 @@ export default function Home() {
           </div>
         </header>
 
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={() => setActiveView("studio")}
+            className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+              activeView === "studio"
+                ? "bg-[var(--accent)] text-white"
+                : "bg-white text-[var(--muted)] border border-[var(--stroke)]"
+            }`}
+          >
+            Studio
+          </button>
+          <button
+            onClick={() => setActiveView("gallery")}
+            className={`rounded-full px-5 py-2 text-sm font-semibold transition ${
+              activeView === "gallery"
+                ? "bg-[var(--accent)] text-white"
+                : "bg-white text-[var(--muted)] border border-[var(--stroke)]"
+            }`}
+          >
+            Gallery
+          </button>
+        </div>
+
+        {activeView === "gallery" ? (
+          <section className="grid gap-6">
+            <div className="rounded-3xl border border-[var(--stroke)] bg-[var(--panel)] p-6 shadow-[0_15px_40px_rgba(106,76,255,0.08)]">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.24em] text-[var(--muted)]">
+                    Gallery
+                  </p>
+                  <h2 className="mt-2 text-2xl font-semibold">
+                    Past generations
+                  </h2>
+                </div>
+              </div>
+
+              {galleryLoading ? (
+                <p className="mt-6 text-sm text-[var(--muted)]">
+                  Loading gallery...
+                </p>
+              ) : gallery.length === 0 ? (
+                <p className="mt-6 text-sm text-[var(--muted)]">
+                  No generations yet. Run a sprint to populate the gallery.
+                </p>
+              ) : (
+                <div className="mt-6 grid gap-6">
+                  {gallery.map((sprint) => (
+                    <div
+                      key={sprint.id}
+                      className="rounded-2xl border border-[var(--stroke)] bg-white p-5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">
+                            {sprint.title ?? "Sprint"}
+                          </p>
+                          <p className="text-xs text-[var(--muted)]">
+                            {new Date(sprint.created_at).toLocaleString()}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() =>
+                            downloadCsv(
+                              `sprint-${sprint.id}.csv`,
+                              toCsv(
+                                sprint.ads.map((ad, index) => ({
+                                  id: `ad-${index + 1}`,
+                                  angle: ad.angle ?? "",
+                                  hook: ad.hook ?? "",
+                                  primary: ad.primary_text ?? "",
+                                  headline: ad.headline ?? "",
+                                  description: ad.description ?? "",
+                                  cta: ad.cta ?? "",
+                                  creative: ad.creative ?? "",
+                                }))
+                              )
+                            )
+                          }
+                          className="rounded-full border border-[var(--stroke)] px-4 py-2 text-xs text-[var(--muted)]"
+                        >
+                          Download CSV
+                        </button>
+                      </div>
+
+                      <div className="mt-4 grid gap-4 md:grid-cols-2">
+                        {sprint.ads.map((ad) => (
+                          <div
+                            key={ad.id}
+                            className="rounded-2xl border border-[var(--stroke)] bg-[var(--panel-2)] p-4"
+                          >
+                            <p className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                              {ad.angle ?? "Angle"}
+                            </p>
+                            <p className="mt-2 text-sm font-semibold">
+                              {ad.headline ?? "Headline"}
+                            </p>
+                            <p className="mt-2 text-xs text-[var(--muted)]">
+                              {ad.primary_text ?? ""}
+                            </p>
+                            {ad.image_url ? (
+                              <div className="mt-3 grid gap-2">
+                                <img
+                                  src={ad.image_url}
+                                  alt="Creative"
+                                  className="w-full rounded-xl border border-[var(--stroke)]"
+                                />
+                                <a
+                                  href={ad.image_url}
+                                  className="text-xs text-[var(--accent)]"
+                                  download
+                                >
+                                  Download image
+                                </a>
+                              </div>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {activeView === "studio" ? (
         <section className="grid gap-6 lg:grid-cols-[1.05fr_1.4fr]">
           <div className="flex flex-col gap-6 rounded-3xl border border-[var(--stroke)] bg-[var(--panel)] p-6">
             <div className="flex items-center justify-between">
@@ -458,7 +759,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, brand: event.target.value }))
                   }
-                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="Sprint Ads"
                 />
               </div>
@@ -469,7 +770,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, product: event.target.value }))
                   }
-                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="AI ad sprint platform"
                 />
               </div>
@@ -480,7 +781,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, productUrl: event.target.value }))
                   }
-                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="https://your-product.com"
                 />
                 <p className="text-xs text-[var(--muted)]">
@@ -494,7 +795,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, offer: event.target.value }))
                   }
-                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="Try 10 credits free"
                 />
               </div>
@@ -505,7 +806,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, audience: event.target.value }))
                   }
-                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="In-house growth teams"
                 />
               </div>
@@ -517,7 +818,7 @@ export default function Home() {
                     onChange={(event) =>
                       setBrief((prev) => ({ ...prev, tone: event.target.value }))
                     }
-                    className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white"
+                    className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)]"
                   >
                     {toneOptions.map((tone) => (
                       <option key={tone} value={tone} className="text-black">
@@ -533,7 +834,7 @@ export default function Home() {
                     onChange={(event) =>
                       setBrief((prev) => ({ ...prev, objective: event.target.value }))
                     }
-                    className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white"
+                    className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)]"
                   >
                     {objectiveOptions.map((objective) => (
                       <option key={objective} value={objective} className="text-black">
@@ -550,7 +851,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, keyBenefits: event.target.value }))
                   }
-                  className="min-h-[90px] rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="min-h-[90px] rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="Ship 6 ad angles in 10 minutes"
                 />
               </div>
@@ -561,7 +862,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, objections: event.target.value }))
                   }
-                  className="min-h-[80px] rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="min-h-[80px] rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="Too expensive, too manual, too slow"
                 />
               </div>
@@ -572,7 +873,7 @@ export default function Home() {
                   onChange={(event) =>
                     setBrief((prev) => ({ ...prev, landingPage: event.target.value }))
                   }
-                  className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                  className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                   placeholder="https://sprintads.ai"
                 />
               </div>
@@ -584,7 +885,7 @@ export default function Home() {
                     onChange={(event) =>
                       setBrief((prev) => ({ ...prev, cta: event.target.value }))
                     }
-                    className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                    className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                     placeholder="Book a demo"
                   />
                 </div>
@@ -595,7 +896,7 @@ export default function Home() {
                     onChange={(event) =>
                       setBrief((prev) => ({ ...prev, budget: event.target.value }))
                     }
-                    className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                    className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                     placeholder="$100/day"
                   />
                 </div>
@@ -616,7 +917,7 @@ export default function Home() {
                           referenceImageUrl: event.target.value,
                         }))
                       }
-                      className="rounded-2xl border border-[var(--stroke)] bg-transparent px-4 py-3 text-sm text-white placeholder:text-[var(--muted)]"
+                      className="rounded-2xl border border-[var(--stroke)] bg-white px-4 py-3 text-sm text-[var(--ink)] placeholder:text-[var(--muted)]"
                       placeholder="https://cdn.site/product.png"
                     />
                   </div>
@@ -745,7 +1046,7 @@ export default function Home() {
                               onChange={(event) =>
                                 updateAd(ad.id, "headline", event.target.value)
                               }
-                              className="mt-2 min-h-[50px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                              className="mt-2 min-h-[50px] w-full rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
                             />
                           </div>
                           <div>
@@ -757,7 +1058,7 @@ export default function Home() {
                               onChange={(event) =>
                                 updateAd(ad.id, "primary", event.target.value)
                               }
-                              className="mt-2 min-h-[80px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                              className="mt-2 min-h-[80px] w-full rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
                             />
                           </div>
                           <div className="grid gap-2 text-sm">
@@ -768,7 +1069,7 @@ export default function Home() {
                                 onChange={(event) =>
                                   updateAd(ad.id, "hook", event.target.value)
                                 }
-                                className="mt-2 min-h-[40px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                                className="mt-2 min-h-[40px] w-full rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
                               />
                             </div>
                             <div>
@@ -782,7 +1083,7 @@ export default function Home() {
                                     event.target.value
                                   )
                                 }
-                                className="mt-2 min-h-[40px] w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                                className="mt-2 min-h-[40px] w-full rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
                               />
                             </div>
                             <div className="grid gap-2 sm:grid-cols-2">
@@ -793,7 +1094,7 @@ export default function Home() {
                                   onChange={(event) =>
                                     updateAd(ad.id, "cta", event.target.value)
                                   }
-                                  className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                                  className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
                                 />
                               </div>
                               <div>
@@ -807,7 +1108,7 @@ export default function Home() {
                                       event.target.value
                                     )
                                   }
-                                  className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-transparent px-3 py-2 text-sm text-white"
+                                  className="mt-2 w-full rounded-2xl border border-[var(--stroke)] bg-white px-3 py-2 text-sm text-[var(--ink)]"
                                 />
                               </div>
                             </div>
@@ -927,6 +1228,7 @@ export default function Home() {
             ))}
           </div>
         </section>
+        ) : null}
       </main>
     </div>
   );
