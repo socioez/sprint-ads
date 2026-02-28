@@ -62,6 +62,7 @@ async function ensureLogin(page) {
   });
   await rl.question("Press Enter after you finish logging in...");
   rl.close();
+  console.log(`Current URL after login: ${page.url()}`);
 }
 
 async function gotoSearch(page, url) {
@@ -154,9 +155,17 @@ async function run() {
 
   const ok = await gotoSearch(page, searchUrl);
   if (!ok) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const screenshotPath = path.join(OUTPUT_DIR, `bni-login-failed-${stamp}.png`);
+    const htmlPath = path.join(OUTPUT_DIR, `bni-login-failed-${stamp}.html`);
+    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => "");
+    if (html) fs.writeFileSync(htmlPath, html);
     console.error(
       "Could not reach search page after login. Verify login success and try again."
     );
+    console.error(`Captured screenshot: ${screenshotPath}`);
+    console.error(`Captured html: ${htmlPath}`);
     await browser.close();
     process.exit(1);
   }
