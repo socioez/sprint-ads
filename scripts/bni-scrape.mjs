@@ -64,6 +64,19 @@ async function ensureLogin(page) {
   rl.close();
 }
 
+async function gotoSearch(page, url) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.waitForLoadState("networkidle").catch(() => {});
+    const stillLogin =
+      (await page.locator('input[type="password"]').count()) > 0 ||
+      (await page.locator("text=/login/i").count()) > 0;
+    if (!stillLogin) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
 async function getProfileLinks(page) {
   const links = await page.$$eval("a[href]", (anchors) =>
     anchors
@@ -139,7 +152,14 @@ async function run() {
   await ensureLogin(page);
   await context.storageState({ path: STATE_PATH });
 
-  await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
+  const ok = await gotoSearch(page, searchUrl);
+  if (!ok) {
+    console.error(
+      "Could not reach search page after login. Verify login success and try again."
+    );
+    await browser.close();
+    process.exit(1);
+  }
 
   await page.getByRole("link", { name: selectors.searchNav }).click();
   await page.getByRole("button", { name: selectors.filtersButton }).click();
