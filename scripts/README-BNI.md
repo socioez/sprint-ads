@@ -18,12 +18,13 @@ npx playwright install
 ## Run
 
 ```bash
-node scripts/bni-scrape.mjs --keyword "Pool" --country "United States"
+node scripts/bni-scrape.mjs --keyword "Pool" --country "United States" --url "https://www.bniconnectglobal.com/login/"
 ```
 
 Optional flags:
 - `--headless true|false` (default false)
 - `--max 50` to cap profiles
+- `--url` to override the login URL
 
 ## Notes
 - The first run will open a browser for you to log in.

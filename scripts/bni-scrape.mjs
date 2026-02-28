@@ -14,6 +14,7 @@ const keyword = getArg("--keyword", "Pool");
 const country = getArg("--country", "United States");
 const headless = getArg("--headless", "false") === "true";
 const maxProfiles = Number(getArg("--max", "0"));
+const baseUrl = getArg("--url", "https://www.bniconnectglobal.com/login/");
 
 const OUTPUT_DIR = path.resolve("outputs");
 const STATE_PATH = path.resolve("outputs", "bni-storage.json");
@@ -127,7 +128,7 @@ async function run() {
     : await browser.newContext();
   const page = await context.newPage();
 
-  await page.goto("https://bnicomms.bni.com/Connect/", {
+  await page.goto(baseUrl, {
     waitUntil: "domcontentloaded",
   });
 
