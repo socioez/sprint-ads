@@ -15,6 +15,10 @@ const country = getArg("--country", "United States");
 const headless = getArg("--headless", "false") === "true";
 const maxProfiles = Number(getArg("--max", "0"));
 const baseUrl = getArg("--url", "https://www.bniconnectglobal.com/login/");
+const searchUrl = getArg(
+  "--search-url",
+  "https://www.bniconnectglobal.com/web/dashboard/search"
+);
 
 const OUTPUT_DIR = path.resolve("outputs");
 const STATE_PATH = path.resolve("outputs", "bni-storage.json");
@@ -134,6 +138,8 @@ async function run() {
 
   await ensureLogin(page);
   await context.storageState({ path: STATE_PATH });
+
+  await page.goto(searchUrl, { waitUntil: "domcontentloaded" });
 
   await page.getByRole("link", { name: selectors.searchNav }).click();
   await page.getByRole("button", { name: selectors.filtersButton }).click();
